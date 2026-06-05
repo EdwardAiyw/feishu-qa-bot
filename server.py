@@ -314,14 +314,20 @@ def check_single_record():
 
 @app.route("/qa/<uid>", methods=["POST"])
 def qa_by_uid(uid):
-    """最简接口：uid 在 URL 路径中"""
+    """最简接口：uid 在 URL 路径中（支持 UID 列值或 record_id）"""
     return _do_single_check(path_uid=uid)
 
 
-def _do_single_check(path_uid=None):
+@app.route("/rec/<record_id>", methods=["POST"])
+def qa_by_record_id(record_id):
+    """最简接口：record_id 在 URL 路径中"""
+    return _do_single_check(path_record_id=record_id)
+
+
+def _do_single_check(path_uid=None, path_record_id=None):
     data = request.get_json(force=True) if request.is_json else {}
     url = data.get("url", "") or request.args.get("url", "") or "https://my.feishu.cn/base/HbVxbeTdJabbFiszEH4czSTdnfh"
-    record_id = data.get("record_id", "") or request.args.get("record_id", "")
+    record_id = path_record_id or data.get("record_id", "") or request.args.get("record_id", "")
     uid = path_uid or data.get("uid") or request.args.get("uid")
     write_back = data.get("write_back", True)
 
