@@ -309,24 +309,12 @@ def debug():
 @app.route("/check/record", methods=["POST"])
 def check_single_record():
     """
-    单条记录质检 — 飞书自动化按钮点击时调用
-    请求体：
-    {
-        "url": "飞书表格链接",
-        "uid": 1,           # UID 列的值（行号）
-        "write_back": true
-    }
-    或：
-    {
-        "url": "飞书表格链接",
-        "record_id": "recXXX",
-        "write_back": true
-    }
+    单条记录质检 — 支持从 body 或 query param 接收 uid
     """
-    data = request.get_json(force=True)
-    url = data.get("url", "")
-    record_id = data.get("record_id", "")
-    uid = data.get("uid", None)
+    data = request.get_json(force=True) if request.is_json else {}
+    url = data.get("url", "") or request.args.get("url", "")
+    record_id = data.get("record_id", "") or request.args.get("record_id", "")
+    uid = data.get("uid") or request.args.get("uid")
     write_back = data.get("write_back", True)
 
     table_info = feishu.parse_bitable_url(url)
