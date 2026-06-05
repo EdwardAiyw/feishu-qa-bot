@@ -296,6 +296,88 @@ def test_check():
         return jsonify({"error": str(e)}), 500
 
 
+# ──── 单条记录质检（飞书自动化按钮用）────
+@app.route("/check/record", methods=["POST"])
+def check_single_record():
+    """
+    单条记录质检 — 飞书自动化按钮点击时调用
+    请求体：
+    {
+        "url": "飞书表格链接",
+        "record_id": "recXXXXXX",
+        "write_back": true
+    }
+    """
+    data = request.get_json(force=True)
+    url = data.get("url", "")
+    record_id = data.get("record_id", "")
+    write_back = data.get("write_back", True)
+
+    if not record_id:
+        return jsonify({"error": "缺少 record_id"}), 400
+
+    table_info = feishu.parse_bitable_url(url)
+    if not table_info:
+        return jsonify({"error": "无效的表格链接"}), 400
+
+    try:
+        app_token = table_info["app_token"]
+        tables = feishu.list_tables(app_token)
+        table_id = table_info.get("table_id") or tables[0]["table_id"]
+        table_name = next((t["name"] for t in tables if t["table_id"] == table_id), tables[0]["name"])
+
+        # 读取字段定义
+        fields = feishu.read_fields(app_token, table_id)
+        field_names = [f["name"] for f in fields]
+        checker.field_mapping = auto_detect_fields(field_names)
+
+        # 只读取这一条记录
+        record = feishu.read_record(app_token, table_id, record_id)
+        parsed = feishu.get_record_values(record, fields)
+
+        # 执行质检
+        result = checker.check_record(1, parsed)
+
+        # 生成单条报告
+        if result.passed:
+            report_text = f"✅ 第1题质检通过！\n「{result.title}」"
+        else:
+            lines = [f"⚠️ 第1题质检未通过", f"「{result.title}」", ""]
+            for issue in result.issues:
+                lines.append(f"{issue.severity} {issue.rule}: {issue.description}")
+                lines.append(f"💡 {issue.suggestion}")
+            report_text = "\n".join(lines)
+
+        # 写回表格
+        written = False
+        if write_back:
+            feishu.ensure_field(app_token, table_id, "是否通过", 1)
+            feishu.ensure_field(app_token, table_id, "质检备注", 1)
+
+            pass_status = "✅通过" if result.passed else "❌不通过"
+            notes = []
+            for issue in result.issues:
+                notes.append(f"{issue.severity} {issue.rule}: {issue.description}\n💡 {issue.suggestion}")
+            note_text = "\n\n".join(notes) if notes else "无问题"
+
+            feishu.update_record(app_token, table_id, record_id, {
+                "是否通过": pass_status,
+                "质检备注": note_text,
+            })
+            written = True
+            report_text += "\n\n✅ 已将结果写入表格"
+
+        return jsonify({
+            "passed": result.passed,
+            "issues": len(result.issues),
+            "written": written,
+            "report": report_text,
+        })
+    except Exception as e:
+        logger.error(f"单条质检失败: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 # ──── 启动 ────
 if __name__ == "__main__":
     logger.info("=" * 50)

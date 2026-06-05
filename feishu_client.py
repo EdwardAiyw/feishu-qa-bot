@@ -73,6 +73,15 @@ class FeishuClient:
         tables = data.get("data", {}).get("items", [])
         return [{"table_id": t["table_id"], "name": t.get("name", "")} for t in tables]
 
+    def read_record(self, app_token: str, table_id: str, record_id: str) -> dict:
+        """读取单条记录"""
+        url = f"{self.base_url}/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}"
+        resp = requests.get(url, headers=self._headers())
+        data = resp.json()
+        if data.get("code") != 0:
+            raise Exception(f"读取记录失败: {data}")
+        return data.get("data", {}).get("record", {})
+
     def read_records(self, app_token: str, table_id: str, page_size: int = 100) -> list:
         """读取多维表格的所有记录"""
         url = f"{self.base_url}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
