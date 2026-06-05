@@ -1,9 +1,22 @@
 """
-二期数据质检引擎 — 7 条规则的严格初步检查
-定位：快速筛出明显违规的数据，宁可误报不可漏报
+二期数据质检引擎 — 从 rules.yaml 读取规则配置
+修改 rules.yaml 后重新部署即可生效，无需改代码
 """
 import re
+import os
+import yaml
 from dataclasses import dataclass, field
+
+
+def load_rules() -> dict:
+    """加载规则配置文件"""
+    rules_path = os.path.join(os.path.dirname(__file__), "rules.yaml")
+    with open(rules_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+# 全局规则配置
+RULES = load_rules()
 
 
 @dataclass
@@ -54,7 +67,7 @@ class QAReport:
 
 
 class QAChecker:
-    """二期数据质检器 — 严格初步检查"""
+    """二期数据质检器 — 从 rules.yaml 读取规则"""
 
     def __init__(self, field_mapping: dict = None):
         self.field_mapping = field_mapping or {
@@ -116,42 +129,29 @@ class QAChecker:
 
     # ──── 规则 1：场景真实性 🔴 ────
 
-    # 严重违规关键词（命中任一即报错）
-    _RULE1_CRITICAL_KEYWORDS = [
-        r"后台数据", r"后台系统", r"管理后台", r"内部系统",
-        r"数据库直接", r"直连数据库", r"直接查.*数据库",
-        r"API\s*接口", r"调用.*接口", r"接口.*获取", r"接口.*数据",
-        r"爬虫.*爬取", r"爬取.*数据", r"抓取.*数据", r"抓取.*信息",
-        r"黑入", r"破解.*系统", r"入侵.*系统", r"攻击.*系统",
-        r"绕过.*验证", r"破解.*密码",
-    ]
-
-    # 不合理限制模式
-    _RULE1_UNREASONABLE_PATTERNS = [
-        r"不使用.*搜索.*查", r"不用.*APP.*查询",
-        r"不通过.*工具.*获取", r"不借助.*工具.*查",
-    ]
-
     def _check_rule1(self, result: QARecordResult, title: str):
         """规则 1：场景真实性 — 检测虚假/非真实场景"""
         if not title:
             return
 
-        for pattern in self._RULE1_CRITICAL_KEYWORDS:
+        rule = RULES.get("rule1", {})
+        severity = rule.get("severity", "🔴")
+
+        for pattern in rule.get("critical_keywords", []):
             if re.search(pattern, title, re.IGNORECASE):
                 result.issues.append(QAIssue(
                     rule="规则1",
-                    severity="🔴",
+                    severity=severity,
                     description="题目包含虚假/非真实场景描述",
                     suggestion="题目必须基于真实情况和场景出发，避免使用后台数据、API接口等非用户可操作的场景",
                 ))
                 return
 
-        for pattern in self._RULE1_UNREASONABLE_PATTERNS:
+        for pattern in rule.get("unreasonable_patterns", []):
             if re.search(pattern, title):
                 result.issues.append(QAIssue(
                     rule="规则1",
-                    severity="🔴",
+                    severity=severity,
                     description="题目场景不合理（限制正常工具却要求专业数据）",
                     suggestion="改为使用常见的APP或工具完成任务",
                 ))
@@ -159,87 +159,67 @@ class QAChecker:
 
     # ──── 规则 2：附件描述是否精简 🟡 ────
 
-    # 附件描述过于详细的模式
-    _RULE2_DETAIL_PATTERNS = [
-        r"附件[1-9一二三四五六七八九十]*[（(].*?[.].*?[)）]",  # 附件1（xxx.xlsx）
-        r"\.(?:xlsx|xls|csv|docx|doc|pdf|pptx|ppt)\b",       # 文件扩展名
-        r"(?:共|总计|约)\s*\d+\s*(?:行|条|列)",                # 数据量
-        r"(?:20\d{2}年|20\d{2}[-/])\d{1,2}月",                # 时间范围
-        r"[（(].*?(?:包含|共|总计).*?[)）]",                     # 括号内详细描述
-        r"附件.*?(?:内容|数据|信息).*?(?:包括|包含|有)",          # 附件内容描述
-        r"附件.*?(?:记录|表格|报告|文档).*?(?:记录|统计|汇总)",    # 附件具体内容
-    ]
-
     def _check_rule2(self, result: QARecordResult, title: str):
         """规则 2：附件描述是否过详细（二期核心规则）"""
         if not title:
             return
 
+        rule = RULES.get("rule2", {})
+        severity = rule.get("severity", "🟡")
+        min_hits = RULES.get("thresholds", {}).get("rule2_min_hits", 2)
+
         issue_count = 0
-        matched_patterns = []
-        for pattern in self._RULE2_DETAIL_PATTERNS:
+        for pattern in rule.get("patterns", []):
             if re.search(pattern, title):
                 issue_count += 1
-                matched_patterns.append(pattern)
 
-        if issue_count >= 2:
+        if issue_count >= min_hits:
             result.issues.append(QAIssue(
                 rule="规则2",
-                severity="🟡",
+                severity=severity,
                 description="题目中附件描述过于详细（包含文件名、格式、行数等）",
                 suggestion="精简附件描述，如'现在有几个附件需要你进行关联'，让大模型自行判断如何使用附件",
             ))
         elif issue_count == 1:
             result.issues.append(QAIssue(
                 rule="规则2",
-                severity="🟡",
+                severity=severity,
                 description="题目中可能包含过多附件细节信息",
                 suggestion="考虑精简附件描述，附件题目、格式和时间可不体现在题目中",
             ))
 
     # ──── 规则 3：产物要求是否精简 🟡 ────
 
-    # 次级要求关键词
-    _RULE3_SECONDARY_KEYWORDS = [
-        r"数据来源", r"注明.*来源", r"标注.*出处", r"引用.*来源",
-        r"配色", r"字体.*(?:大小|颜色|类型|字号)",
-        r"行距", r"页边距", r"字间距",
-        r"字数.*(?:不少于|不超过|控制在|限制在)",
-        r"\d+字",
-    ]
-
-    # 过于刚性的要求
-    _RULE3_RIGID_PATTERNS = [
-        r"(?:必须|一定|严格按照).*?格式",
-        r"(?:不得|不能|不可以).*?(?:修改|更改|调整)",
-    ]
-
     def _check_rule3(self, result: QARecordResult, title: str):
         """规则 3：产物要求是否精简（二期核心规则）"""
         if not title:
             return
 
+        rule = RULES.get("rule3", {})
+        severity = rule.get("severity", "🟡")
+        min_hits = RULES.get("thresholds", {}).get("rule3_min_hits", 2)
+
         secondary_count = 0
-        for pattern in self._RULE3_SECONDARY_KEYWORDS:
+        for pattern in rule.get("secondary_keywords", []):
             if re.search(pattern, title):
                 secondary_count += 1
 
-        if secondary_count >= 2:
+        if secondary_count >= min_hits:
             result.issues.append(QAIssue(
                 rule="规则3",
-                severity="🟡",
+                severity=severity,
                 description="题目中包含过多次级产物要求（如数据来源、配色、字体等）",
                 suggestion="精简产物要求，保留核心需求，次级要求（配色、数据来源等）可移除或更开放",
             ))
         elif secondary_count == 1:
             result.issues.append(QAIssue(
                 rule="规则3",
-                severity="🟡",
+                severity=severity,
                 description="题目中可能包含次级产物要求",
                 suggestion="考虑精简产物要求，只有最核心的要求才需要体现",
             ))
 
-        for pattern in self._RULE3_RIGID_PATTERNS:
+        for pattern in rule.get("rigid_patterns", []):
             if re.search(pattern, title):
                 result.issues.append(QAIssue(
                     rule="规则3",
@@ -256,42 +236,48 @@ class QAChecker:
         if not title:
             return
 
-        if len(title) > 500:
+        rule = RULES.get("rule4", {})
+        severity = rule.get("severity", "🟢")
+        max_chars = RULES.get("thresholds", {}).get("rule4_max_chars", 500)
+        max_sentences = RULES.get("thresholds", {}).get("rule4_max_sentences", 10)
+
+        if len(title) > max_chars:
             result.issues.append(QAIssue(
                 rule="规则4",
-                severity="🟢",
+                severity=severity,
                 description=f"题目过长（{len(title)}字），可能包含赘述",
                 suggestion="题目阐述要精简，不赘述",
             ))
 
         sentences = re.split(r"[。！？\n]", title)
-        if len(sentences) > 10:
+        if len(sentences) > max_sentences:
             result.issues.append(QAIssue(
                 rule="规则4",
-                severity="🟢",
+                severity=severity,
                 description="题目包含较多句子，可能存在赘述",
                 suggestion="精简题目，合并重复表达",
             ))
 
     # ──── 规则 5：自检要求 🟢 ────
 
-    _RULE5_SELF_CHECK_KEYWORDS = [
-        r"自检", r"自行检查", r"检查.*?(?:是否|有没有)",
-        r"验证.*?(?:是否|正确性)", r"确认.*?(?:是否|正确)",
-    ]
-
     def _check_rule5(self, result: QARecordResult, title: str, output: str):
         """规则 5：自检要求是否合理"""
         if not title:
             return
 
-        has_self_check = any(re.search(p, title) for p in self._RULE5_SELF_CHECK_KEYWORDS)
+        rule = RULES.get("rule5", {})
+        severity = rule.get("severity", "🟢")
+        output_min = RULES.get("thresholds", {}).get("rule5_output_min_chars", 20)
+
+        has_self_check = any(
+            re.search(p, title) for p in rule.get("self_check_keywords", [])
+        )
 
         if has_self_check:
-            if not output or len(output) < 20:
+            if not output or len(output) < output_min:
                 result.issues.append(QAIssue(
                     rule="规则5",
-                    severity="🟢",
+                    severity=severity,
                     description="题目包含自检要求，但产物要求不够明确",
                     suggestion="模型自检不强制要求。如要求自检，需确保产物格式/内容要求十分明确",
                 ))
@@ -300,40 +286,39 @@ class QAChecker:
 
     def _check_rule6(self, result: QARecordResult, checklist: str):
         """规则 6：checklist 是否填写"""
+        rule = RULES.get("rule6", {})
+        min_chars = RULES.get("thresholds", {}).get("rule6_min_chars", 10)
+
         if not checklist or checklist.strip() == "":
             result.issues.append(QAIssue(
                 rule="规则6",
-                severity="🔴",
+                severity=rule.get("severity_empty", "🔴"),
                 description="打分checklist未填写（必填项）",
                 suggestion="需列出模型应达成的核心需求，规则需客观可评判",
             ))
-        elif len(checklist.strip()) < 10:
+        elif len(checklist.strip()) < min_chars:
             result.issues.append(QAIssue(
                 rule="规则6",
-                severity="🟡",
-                description="打分checklist内容过短（少于10字）",
+                severity=rule.get("severity_short", "🟡"),
+                description="打分checklist内容过短",
                 suggestion="checklist应列出具体的评判标准，确保客观可评判",
             ))
 
     # ──── 规则 7：是否包含 L1-3 层级 🟡 ────
-
-    _RULE7_LEVEL_PATTERNS = [
-        r"\bL[123]\b",           # L1, L2, L3（独立出现）
-        r"层级[123一二三]",       # 层级1, 层级二
-        r"任务层级",              # 任务层级
-        r"任务级别.*[123一二三]",  # 任务级别1
-    ]
 
     def _check_rule7(self, result: QARecordResult, title: str):
         """规则 7：题目中不应包含 L1-3 层级任务"""
         if not title:
             return
 
-        for pattern in self._RULE7_LEVEL_PATTERNS:
+        rule = RULES.get("rule7", {})
+        severity = rule.get("severity", "🟡")
+
+        for pattern in rule.get("level_patterns", []):
             if re.search(pattern, title, re.IGNORECASE):
                 result.issues.append(QAIssue(
                     rule="规则7",
-                    severity="🟡",
+                    severity=severity,
                     description="题目中包含了L1-3层级任务描述",
                     suggestion="L1-3层级任务应在任务类型列选择，不用写在题目中",
                 ))
