@@ -296,6 +296,15 @@ def test_check():
         return jsonify({"error": str(e)}), 500
 
 
+# ──── 调试接口（查看收到的数据）────
+@app.route("/debug", methods=["POST"])
+def debug():
+    """调试用：返回收到的请求体"""
+    data = request.get_json(force=True)
+    logger.info(f"调试收到: {data}")
+    return jsonify({"received": data})
+
+
 # ──── 单条记录质检（飞书自动化按钮用）────
 @app.route("/check/record", methods=["POST"])
 def check_single_record():
