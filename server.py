@@ -308,13 +308,21 @@ def debug():
 # ──── 单条记录质检（飞书自动化按钮用）────
 @app.route("/check/record", methods=["POST"])
 def check_single_record():
-    """
-    单条记录质检 — 支持从 body 或 query param 接收 uid
-    """
+    """单条记录质检 — 支持 body / query param / path"""
+    return _do_single_check()
+
+
+@app.route("/qa/<uid>", methods=["POST"])
+def qa_by_uid(uid):
+    """最简接口：uid 在 URL 路径中"""
+    return _do_single_check(path_uid=uid)
+
+
+def _do_single_check(path_uid=None):
     data = request.get_json(force=True) if request.is_json else {}
-    url = data.get("url", "") or request.args.get("url", "")
+    url = data.get("url", "") or request.args.get("url", "") or "https://my.feishu.cn/base/HbVxbeTdJabbFiszEH4czSTdnfh"
     record_id = data.get("record_id", "") or request.args.get("record_id", "")
-    uid = data.get("uid") or request.args.get("uid")
+    uid = path_uid or data.get("uid") or request.args.get("uid")
     write_back = data.get("write_back", True)
 
     table_info = feishu.parse_bitable_url(url)
