@@ -313,17 +313,21 @@ def check_single_record():
     请求体：
     {
         "url": "飞书表格链接",
-        "record_id": "recXXXXXX",
+        "uid": 1,           # UID 列的值（行号）
+        "write_back": true
+    }
+    或：
+    {
+        "url": "飞书表格链接",
+        "record_id": "recXXX",
         "write_back": true
     }
     """
     data = request.get_json(force=True)
     url = data.get("url", "")
     record_id = data.get("record_id", "")
+    uid = data.get("uid", None)
     write_back = data.get("write_back", True)
-
-    if not record_id:
-        return jsonify({"error": "缺少 record_id"}), 400
 
     table_info = feishu.parse_bitable_url(url)
     if not table_info:
@@ -340,8 +344,24 @@ def check_single_record():
         field_names = [f["name"] for f in fields]
         checker.field_mapping = auto_detect_fields(field_names)
 
-        # 只读取这一条记录
-        record = feishu.read_record(app_token, table_id, record_id)
+        # 获取记录
+        if uid is not None:
+            # 通过 UID 查找记录
+            all_records = feishu.read_records(app_token, table_id)
+            target_record = None
+            for r in all_records:
+                parsed = feishu.get_record_values(r, fields)
+                if parsed.get("UID", "") == str(uid):
+                    target_record = r
+                    break
+            if not target_record:
+                return jsonify({"error": f"未找到 UID={uid} 的记录"}), 404
+            record = target_record
+        elif record_id:
+            record = feishu.read_record(app_token, table_id, record_id)
+        else:
+            return jsonify({"error": "缺少 uid 或 record_id"}), 400
+
         parsed = feishu.get_record_values(record, fields)
 
         # 执行质检
@@ -349,17 +369,18 @@ def check_single_record():
 
         # 生成单条报告
         if result.passed:
-            report_text = f"✅ 第1题质检通过！\n「{result.title}」"
+            report_text = f"✅ 质检通过！\n「{result.title}」"
         else:
-            lines = [f"⚠️ 第1题质检未通过", f"「{result.title}」", ""]
+            lines = [f"⚠️ 质检未通过", f"「{result.title}」", ""]
             for issue in result.issues:
                 lines.append(f"{issue.severity} {issue.rule}: {issue.description}")
                 lines.append(f"💡 {issue.suggestion}")
             report_text = "\n".join(lines)
 
         # 写回表格
+        actual_record_id = record.get("record_id", record_id)
         written = False
-        if write_back:
+        if write_back and actual_record_id:
             feishu.ensure_field(app_token, table_id, "是否通过", 1)
             feishu.ensure_field(app_token, table_id, "质检备注", 1)
 
@@ -369,7 +390,7 @@ def check_single_record():
                 notes.append(f"{issue.severity} {issue.rule}: {issue.description}\n💡 {issue.suggestion}")
             note_text = "\n\n".join(notes) if notes else "无问题"
 
-            feishu.update_record(app_token, table_id, record_id, {
+            feishu.update_record(app_token, table_id, actual_record_id, {
                 "是否通过": pass_status,
                 "质检备注": note_text,
             })
