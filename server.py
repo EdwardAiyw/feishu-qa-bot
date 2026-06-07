@@ -285,7 +285,13 @@ def test_check():
         table_name = next((t["name"] for t in tables if t["table_id"] == table_id), tables[0]["name"])
 
         fields = feishu.read_fields(app_token, table_id)
-        records = feishu.read_records(app_token, table_id)
+        # 支持 limit 参数限制读取量（避免大表格超时）
+        limit = data.get("limit", 0)
+        if limit > 0:
+            records = feishu.read_records(app_token, table_id, page_size=min(limit, 100))
+            records = records[:limit]
+        else:
+            records = feishu.read_records(app_token, table_id)
 
         # 解析并过滤空行
         parsed_records = []
