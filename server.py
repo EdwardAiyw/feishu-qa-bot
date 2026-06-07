@@ -196,23 +196,66 @@ def do_quality_check(message_id: str, table_info: dict):
 
 
 def auto_detect_fields(field_names: list) -> dict:
-    """自动检测字段映射"""
+    """自动检测字段映射 — 动态适配任意表格结构
+    
+    匹配策略（按优先级）：
+    1. 精确前缀匹配（如"题目"开头）
+    2. 关键词包含匹配（如包含"checklist"）
+    3. 模糊匹配（如"产物"相关列）
+    
+    找不到的字段不映射，对应规则自动跳过。
+    """
     mapping = {}
 
+    # 优先级1：精确匹配
     for name in field_names:
-        name_lower = name.lower()
-
+        ns = name.strip()
         # 题目列：以"题目"开头，排除"题目领域"
-        if name.startswith("题目") and "领域" not in name:
+        if ns.startswith("题目") and "领域" not in ns:
             mapping["title"] = name
-        elif "附件" in name_lower and "总结" in name:
+            break
+
+    # 如果没找到"题目"开头的，尝试模糊匹配
+    if "title" not in mapping:
+        for name in field_names:
+            ns = name.strip().lower()
+            if "题目" in ns and "领域" not in ns and "类型" not in ns:
+                mapping["title"] = name
+                break
+
+    # 附件内容
+    for name in field_names:
+        ns = name.strip()
+        if "附件" in ns and ("内容" in ns or "总结" in ns):
             mapping["attachments"] = name
-        elif "产物" in name_lower and "总结" in name:
+            break
+
+    # 产物内容
+    for name in field_names:
+        ns = name.strip()
+        if "产物" in ns and ("内容" in ns or "总结" in ns):
             mapping["output"] = name
-        elif "任务类型" in name_lower or "task" in name_lower:
+            break
+
+    # 任务类型
+    for name in field_names:
+        ns = name.strip()
+        if "任务类型" in ns:
             mapping["task_type"] = name
-        elif "checklist" in name_lower or ("打分" in name and "checklist" in name):
+            break
+
+    # 打分checklist
+    for name in field_names:
+        nl = name.strip().lower()
+        if "checklist" in nl or ("打分" in name and ("checklist" in name or "check" in nl)):
             mapping["checklist"] = name
+            break
+    # 兜底：如果没找到checklist，尝试"评分"相关
+    if "checklist" not in mapping:
+        for name in field_names:
+            if "评分" in name and ("标准" in name or "规则" in name or "check" in name.lower()):
+                mapping["checklist"] = name
+                break
 
     return mapping
 
@@ -449,6 +492,71 @@ def _do_single_check(path_uid=None, path_record_id=None):
         logger.error(f"单条质检失败: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+
+
+# ──── 表格发现（查看实际字段和映射）────
+@app.route("/discover", methods=["POST"])
+def discover_table():
+    """发现表格结构：显示所有字段和自动映射结果"""
+    data = request.get_json(force=True) if request.is_json else {}
+    url = data.get("url", "")
+
+    # 判断是 bitable 还是 sheet
+    sheet_info = feishu.parse_sheet_url(url)
+    bitable_info = feishu.parse_bitable_url(url)
+
+    if bitable_info:
+        app_token = bitable_info["app_token"]
+        try:
+            tables = feishu.list_tables(app_token)
+            all_results = []
+            for t in tables:
+                tid = t["table_id"]
+                tname = t["name"]
+                fields = feishu.read_fields(app_token, tid)
+                field_names = [f["name"] for f in fields]
+                mapping = auto_detect_fields(field_names)
+                # 只保留前30个字段名（截断太长的）
+                preview = [n[:40] for n in field_names[:20]]
+                all_results.append({
+                    "table_id": tid,
+                    "table_name": tname,
+                    "field_count": len(field_names),
+                    "fields_preview": preview,
+                    "mapping": {k: v[:40] for k, v in mapping.items()},
+                    "mapped_rules": list(mapping.keys()),
+                })
+            return jsonify({"type": "bitable", "tables": all_results})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    elif sheet_info:
+        spreadsheet_token = sheet_info["spreadsheet_token"]
+        try:
+            meta = feishu.get_sheet_meta(spreadsheet_token)
+            sheets = meta.get("sheets", [])
+            all_results = []
+            for s in sheets:
+                sid = s["sheetId"]
+                sname = s["title"]
+                headers = feishu.read_sheet_values(spreadsheet_token, f"{sid}!A1:Z1")
+                if headers:
+                    field_names = [h for h in headers[0] if h]
+                    mapping = auto_detect_fields(field_names)
+                    all_results.append({
+                        "sheet_id": sid,
+                        "sheet_name": sname,
+                        "field_count": len(field_names),
+                        "fields_preview": [n[:40] for n in field_names[:20]],
+                        "mapping": {k: v[:40] for k, v in mapping.items()},
+                        "mapped_rules": list(mapping.keys()),
+                    })
+            return jsonify({"type": "sheet", "sheets": all_results})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    else:
+        return jsonify({"error": "无法解析链接"}), 400
 
 # ──── 电子表格质检 ────
 

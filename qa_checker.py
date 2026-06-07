@@ -84,38 +84,54 @@ class QAChecker:
         return record.get(field_name, "")
 
     def check_record(self, row_index: int, record: dict) -> QARecordResult:
-        """对单条记录执行全部质检规则"""
+        """对单条记录执行全部质检规则
+        
+        字段动态适配：如果某个字段在表格中不存在（映射为空），
+        对应规则自动跳过，不产生误报。
+        """
         title = self._get_field(record, "title")
         attachments = self._get_field(record, "attachments")
         output = self._get_field(record, "output")
         task_type = self._get_field(record, "task_type")
         checklist = self._get_field(record, "checklist")
 
+        # 检查哪些字段已映射（非空即有数据）
+        has_title = self.field_mapping.get("title") is not None
+        has_checklist = self.field_mapping.get("checklist") is not None
+        has_output = self.field_mapping.get("output") is not None
+
         result = QARecordResult(
             row_index=row_index,
             title=title[:30] + "..." if len(title) > 30 else title,
         )
 
-        # 规则 1：场景真实性 🔴
-        self._check_rule1(result, title)
+        # 规则 1：场景真实性 🔴（需要题目字段）
+        if has_title:
+            self._check_rule1(result, title)
 
-        # 规则 2：附件描述是否精简 🟡
-        self._check_rule2(result, title)
+        # 规则 2：附件描述是否精简 🟡（需要题目字段）
+        if has_title:
+            self._check_rule2(result, title)
 
-        # 规则 3：产物要求是否精简 🟡
-        self._check_rule3(result, title)
+        # 规则 3：产物要求是否精简 🟡（需要题目字段）
+        if has_title:
+            self._check_rule3(result, title)
 
-        # 规则 4：题目是否赘述 🟢
-        self._check_rule4(result, title)
+        # 规则 4：题目是否赘述 🟢（需要题目字段）
+        if has_title:
+            self._check_rule4(result, title)
 
-        # 规则 5：自检要求 🟢
-        self._check_rule5(result, title, output)
+        # 规则 5：自检要求 🟢（需要题目+产物字段）
+        if has_title and has_output:
+            self._check_rule5(result, title, output)
 
-        # 规则 6：checklist 是否填写 🔴
-        self._check_rule6(result, checklist)
+        # 规则 6：checklist 是否填写 🔴（需要checklist字段）
+        if has_checklist:
+            self._check_rule6(result, checklist)
 
-        # 规则 7：是否包含 L1-3 层级 🟡
-        self._check_rule7(result, title)
+        # 规则 7：是否包含 L1-3 层级 🟡（需要题目字段）
+        if has_title:
+            self._check_rule7(result, title)
 
         return result
 
