@@ -2,6 +2,7 @@
 飞书质检机器人 Webhook 服务
 接收飞书事件 → 读取表格 → 执行质检 → 返回报告
 """
+import os
 import json
 import logging
 import hashlib
@@ -217,9 +218,11 @@ def auto_detect_fields(field_names: list) -> dict:
 
 
 # ──── 健康检查 ────
+VERSION = "v2.1-field-fix"
+
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "feishu-qa-bot"})
+    return jsonify({"status": "ok", "service": "feishu-qa-bot", "version": VERSION})
 
 
 # ──── 手动触发（测试用）───
