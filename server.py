@@ -478,39 +478,6 @@ def _do_single_check(path_uid=None, path_record_id=None):
 
 
 
-@app.route("/debug/raw", methods=["POST"])
-def debug_raw():
-    """临时调试：读取第一条记录的原始数据"""
-    import requests as req
-    data = request.get_json(force=True) if request.is_json else {}
-    url = data.get("url", "")
-    table_info = feishu.parse_bitable_url(url)
-    if not table_info:
-        return jsonify({"error": "invalid url"}), 400
-    try:
-        app_token = table_info["app_token"]
-        table_id = table_info.get("table_id", "")
-        if not table_id:
-            tables = feishu.list_tables(app_token)
-            table_id = tables[0]["table_id"]
-        token = feishu.get_tenant_access_token()
-        api_url = f"{feishu.base_url}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
-        resp = req.get(api_url, headers=feishu._headers(), params={"page_size": 1}, timeout=10)
-        d = resp.json()
-        items = d.get("data", {}).get("items", [])
-        if items:
-            r = items[0]
-            return jsonify({
-                "code": d.get("code"),
-                "record_id": r.get("record_id"),
-                "fields_count": len(r.get("fields", {})),
-                "sample_keys": list(r.get("fields", {}).keys())[:5],
-                "uid_value": r.get("fields", {}).get("UID", "MISSING"),
-            })
-        return jsonify({"code": d.get("code"), "items": 0, "raw": str(d)[:300]})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 # ──── 表格发现（查看实际字段和映射）────
 @app.route("/discover", methods=["POST"])
 def discover_table():
