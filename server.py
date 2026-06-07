@@ -261,11 +261,9 @@ def auto_detect_fields(field_names: list) -> dict:
 
 
 # ──── 健康检查 ────
-VERSION = "v2.1-field-fix"
-
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "feishu-qa-bot", "version": VERSION})
+    return jsonify({"status": "ok", "service": "feishu-qa-bot"})
 
 
 # ──── 手动触发（测试用）───
@@ -353,33 +351,6 @@ def test_check():
 
 
 # ──── 调试接口（查看收到的数据）────
-@app.route("/debug/record", methods=["POST"])
-def debug_record():
-    """调试：查看第一条记录的解析结果"""
-    data = request.get_json(force=True) if request.is_json else {}
-    url = data.get("url", "")
-    table_info = feishu.parse_bitable_url(url)
-    if not table_info:
-        return jsonify({"error": "invalid url"}), 400
-    try:
-        app_token = table_info["app_token"]
-        tables = feishu.list_tables(app_token)
-        table_id = table_info.get("table_id") or tables[0]["table_id"]
-        fields = feishu.read_fields(app_token, table_id)
-        records = feishu.read_records(app_token, table_id, page_size=1)
-        parsed = feishu.get_record_values(records[0], fields)
-        field_names = [f["name"] for f in fields]
-        mapping = auto_detect_fields(field_names)
-        return jsonify({
-            "raw_keys": list(records[0]["fields"].keys())[:5],
-            "parsed_keys": list(parsed.keys())[:10],
-            "mapping": {k: v[:30] for k, v in mapping.items()},
-            "title_sample": str(parsed.get(mapping.get("title", ""), ""))[:80],
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/debug", methods=["POST"])
 def debug():
     """调试用：返回收到的请求体"""
