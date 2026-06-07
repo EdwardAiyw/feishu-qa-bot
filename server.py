@@ -288,8 +288,14 @@ def test_check():
         # 支持 limit 参数限制读取量（避免大表格超时）
         limit = data.get("limit", 0)
         if limit > 0:
-            records = feishu.read_records(app_token, table_id, page_size=min(limit, 100))
-            records = records[:limit]
+            # 只读一页，不翻页
+            import requests as _req
+            _url = f"{feishu.base_url}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+            _resp = _req.get(_url, headers=feishu._headers(), params={"page_size": min(limit, 100)}, timeout=15)
+            _data = _resp.json()
+            if _data.get("code") != 0:
+                raise Exception(f"读取记录失败: {_data}")
+            records = _data.get("data", {}).get("items", [])[:limit]
         else:
             records = feishu.read_records(app_token, table_id)
 
