@@ -42,24 +42,14 @@ class FeishuClient:
         }
 
     def parse_bitable_url(self, url: str) -> dict | None:
-        """
-        解析飞书多维表格链接
-        示例: https://xxx.feishu.cn/base/KyIwbVsHfa5RIPsf0vLcwUyOntg
-        返回: {"app_token": "KyIwbVsHfa5RIPsf0vLcwUyOntg"}
-        """
-        pattern = r"feishu\.cn/base/([a-zA-Z0-9]+)"
-        match = re.search(pattern, url)
-        if match:
-            return {"app_token": match.group(1)}
-
-        # 也支持 table 链接
-        pattern2 = r"feishu\.cn/base/([a-zA-Z0-9]+)\?.*table=([a-zA-Z0-9]+)"
-        match2 = re.search(pattern2, url)
-        if match2:
-            return {
-                "app_token": match2.group(1),
-                "table_id": match2.group(2),
-            }
+        """解析飞书多维表格链接，支持 ?table=xxx 参数"""
+        # 先匹配带 table= 的（更长的模式），否则短模式会先匹配丢失 table_id
+        m2 = re.search(r"feishu\.cn/base/([a-zA-Z0-9]+)\?.*table=([a-zA-Z0-9]+)", url)
+        if m2:
+            return {"app_token": m2.group(1), "table_id": m2.group(2)}
+        m1 = re.search(r"feishu\.cn/base/([a-zA-Z0-9]+)", url)
+        if m1:
+            return {"app_token": m1.group(1)}
         return None
 
     def list_tables(self, app_token: str) -> list:
@@ -134,9 +124,7 @@ class FeishuClient:
             else:
                 field_name = field_id_to_name.get(key, key)
 
-            # 处理不同类型的字段值
             if isinstance(value, list):
-                # 多选、人员等字段
                 text_parts = []
                 for item in value:
                     if isinstance(item, dict):
@@ -182,21 +170,12 @@ class FeishuClient:
     # ──── 电子表格（Sheet）方法 ────
 
     def parse_sheet_url(self, url: str) -> dict | None:
-        """
-        解析飞书电子表格链接或 wiki 链接
-        支持格式:
-          - https://xxx.feishu.cn/sheets/I1uFsT6AXhmmHjtj14ScydZXnqc
-          - https://xxx.feishu.cn/wiki/GRrdw2gnPivxzLk8HZkcgMTRnPh (wiki 中的 sheet)
-        返回: {"spreadsheet_token": "xxx", "sheet_id": "yyy" | None}
-        """
-        import re
-        # Direct sheet URL
+        """解析飞书电子表格或 wiki 链接"""
         pattern = r"feishu\.cn/sheets/([a-zA-Z0-9]+)"
         match = re.search(pattern, url)
         if match:
             return {"spreadsheet_token": match.group(1)}
 
-        # Wiki URL — need to resolve to sheet token
         pattern2 = r"feishu\.cn/wiki/([a-zA-Z0-9]+)"
         match2 = re.search(pattern2, url)
         if match2:
@@ -217,7 +196,7 @@ class FeishuClient:
         return data.get("data", {}).get("node", {})
 
     def get_sheet_meta(self, spreadsheet_token: str) -> dict:
-        """获取电子表格元信息（含所有 sheet 列表）"""
+        """获取电子表格元信息"""
         url = f"{self.base_url}/sheets/v2/spreadsheets/{spreadsheet_token}/metainfo"
         resp = requests.get(url, headers=self._headers())
         data = resp.json()
@@ -226,11 +205,7 @@ class FeishuClient:
         return data.get("data", {})
 
     def read_sheet_values(self, spreadsheet_token: str, range_str: str) -> list:
-        """
-        读取电子表格单元格数据
-        range_str 格式: "sheetId!A1:Z100" 或 "sheetId!A:Z"
-        返回: [[cell1, cell2, ...], [cell1, cell2, ...], ...]
-        """
+        """读取电子表格单元格数据"""
         url = f"{self.base_url}/sheets/v2/spreadsheets/{spreadsheet_token}/values/{range_str}"
         resp = requests.get(url, headers=self._headers(), params={"valueRenderOption": "ToString"})
         data = resp.json()
@@ -239,10 +214,7 @@ class FeishuClient:
         return data.get("data", {}).get("valueRange", {}).get("values", [])
 
     def write_sheet_values(self, spreadsheet_token: str, range_str: str, values: list) -> dict:
-        """
-        写入电子表格单元格数据
-        values: [[cell1, cell2], [cell1, cell2], ...]
-        """
+        """写入电子表格单元格数据"""
         url = f"{self.base_url}/sheets/v2/spreadsheets/{spreadsheet_token}/values"
         body = {
             "valueRange": {
@@ -268,10 +240,7 @@ class FeishuClient:
     # ──── 多维表格写入方法 ────
 
     def create_field(self, app_token: str, table_id: str, field_name: str, field_type: int = 1) -> dict:
-        """
-        在表格中创建新字段（列）
-        field_type: 1=文本, 2=数字, 3=单选, 4=多选, 5=日期, 7=复选框, 11=人员, 15=链接
-        """
+        """在表格中创建新字段（列）"""
         url = f"{self.base_url}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
         body = {
             "field_name": field_name,
@@ -299,10 +268,7 @@ class FeishuClient:
         return self.create_field(app_token, table_id, field_name, field_type)
 
     def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict) -> dict:
-        """
-        更新单条记录的字段值
-        fields: {"字段名": "值", ...}
-        """
+        """更新单条记录的字段值"""
         url = f"{self.base_url}/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}"
         body = {"fields": fields}
         resp = requests.put(url, headers=self._headers(), json=body)
@@ -312,11 +278,7 @@ class FeishuClient:
         return data
 
     def batch_update_records(self, app_token: str, table_id: str, records: list) -> dict:
-        """
-        批量更新记录
-        records: [{"record_id": "xxx", "fields": {"字段名": "值"}}, ...]
-        最多一次 500 条
-        """
+        """批量更新记录"""
         url = f"{self.base_url}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_update"
         body = {"records": records}
         resp = requests.post(url, headers=self._headers(), json=body)
