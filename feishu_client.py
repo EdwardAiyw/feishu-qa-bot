@@ -171,6 +171,92 @@ class FeishuClient:
             raise Exception(f"回复消息失败: {data}")
         return data
 
+    # ──── 电子表格（Sheet）方法 ────
+
+    def parse_sheet_url(self, url: str) -> dict | None:
+        """
+        解析飞书电子表格链接或 wiki 链接
+        支持格式:
+          - https://xxx.feishu.cn/sheets/I1uFsT6AXhmmHjtj14ScydZXnqc
+          - https://xxx.feishu.cn/wiki/GRrdw2gnPivxzLk8HZkcgMTRnPh (wiki 中的 sheet)
+        返回: {"spreadsheet_token": "xxx", "sheet_id": "yyy" | None}
+        """
+        import re
+        # Direct sheet URL
+        pattern = r"feishu\.cn/sheets/([a-zA-Z0-9]+)"
+        match = re.search(pattern, url)
+        if match:
+            return {"spreadsheet_token": match.group(1)}
+
+        # Wiki URL — need to resolve to sheet token
+        pattern2 = r"feishu\.cn/wiki/([a-zA-Z0-9]+)"
+        match2 = re.search(pattern2, url)
+        if match2:
+            wiki_token = match2.group(1)
+            node = self.get_wiki_node(wiki_token)
+            if node and node.get("obj_type") == "sheet":
+                return {"spreadsheet_token": node["obj_token"], "wiki_token": wiki_token}
+            return None
+        return None
+
+    def get_wiki_node(self, wiki_token: str) -> dict | None:
+        """获取 wiki 节点信息"""
+        url = f"{self.base_url}/wiki/v2/spaces/get_node"
+        resp = requests.get(url, headers=self._headers(), params={"token": wiki_token})
+        data = resp.json()
+        if data.get("code") != 0:
+            return None
+        return data.get("data", {}).get("node", {})
+
+    def get_sheet_meta(self, spreadsheet_token: str) -> dict:
+        """获取电子表格元信息（含所有 sheet 列表）"""
+        url = f"{self.base_url}/sheets/v2/spreadsheets/{spreadsheet_token}/metainfo"
+        resp = requests.get(url, headers=self._headers())
+        data = resp.json()
+        if data.get("code") != 0:
+            raise Exception(f"获取表格元信息失败: {data}")
+        return data.get("data", {})
+
+    def read_sheet_values(self, spreadsheet_token: str, range_str: str) -> list:
+        """
+        读取电子表格单元格数据
+        range_str 格式: "sheetId!A1:Z100" 或 "sheetId!A:Z"
+        返回: [[cell1, cell2, ...], [cell1, cell2, ...], ...]
+        """
+        url = f"{self.base_url}/sheets/v2/spreadsheets/{spreadsheet_token}/values/{range_str}"
+        resp = requests.get(url, headers=self._headers(), params={"valueRenderOption": "ToString"})
+        data = resp.json()
+        if data.get("code") != 0:
+            raise Exception(f"读取表格数据失败: {data}")
+        return data.get("data", {}).get("valueRange", {}).get("values", [])
+
+    def write_sheet_values(self, spreadsheet_token: str, range_str: str, values: list) -> dict:
+        """
+        写入电子表格单元格数据
+        values: [[cell1, cell2], [cell1, cell2], ...]
+        """
+        url = f"{self.base_url}/sheets/v2/spreadsheets/{spreadsheet_token}/values"
+        body = {
+            "valueRange": {
+                "range": range_str,
+                "values": values,
+            }
+        }
+        resp = requests.put(url, headers=self._headers(), json=body)
+        data = resp.json()
+        if data.get("code") != 0:
+            raise Exception(f"写入表格数据失败: {data}")
+        return data
+
+    @staticmethod
+    def col_index_to_letter(index: int) -> str:
+        """列索引(0-based)转字母: 0→A, 25→Z, 26→AA"""
+        result = ""
+        while index >= 0:
+            result = chr(65 + index % 26) + result
+            index = index // 26 - 1
+        return result
+
     # ──── 多维表格写入方法 ────
 
     def create_field(self, app_token: str, table_id: str, field_name: str, field_type: int = 1) -> dict:

@@ -5,6 +5,7 @@
 import json
 import logging
 import hashlib
+import time
 from flask import Flask, request, jsonify
 from feishu_client import FeishuClient
 from qa_checker import QAChecker, format_report
@@ -407,6 +408,192 @@ def _do_single_check(path_uid=None, path_record_id=None):
         })
     except Exception as e:
         logger.error(f"单条质检失败: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+# ──── 电子表格质检 ────
+
+# 这个电子表格的列映射（根据表头自动检测）
+SHEET_FIELD_MAP = {
+    "title": "B",        # 题目
+    "attachments": "L",   # 附件内容
+    "output": "N",        # 产物内容
+    "checklist": "P",     # 打分checklist
+    "qa_result": "R",     # 内部质检（写入）
+    "qa_note": "S",       # 原因（写入）
+}
+
+
+def detect_sheet_field_map(headers: list) -> dict:
+    """根据表头自动检测列映射"""
+    mapping = {}
+    for i, h in enumerate(headers):
+        if not h:
+            continue
+        h_str = str(h).strip()
+        h_lower = h_str.lower()
+        col = feishu.col_index_to_letter(i)
+
+        # 题目列：表头以"题目"开头（排除"题目领域"等）
+        if h_str.startswith("题目") and "领域" not in h_str:
+            mapping["title"] = col
+        elif "附件内容" in h_str or ("附件" in h_str and "总结" in h_str):
+            mapping["attachments"] = col
+        elif "产物内容" in h_str or ("产物" in h_str and "总结" in h_str):
+            mapping["output"] = col
+        elif "checklist" in h_lower or ("打分" in h_str and "checklist" in h_str):
+            mapping["checklist"] = col
+        elif h_str == "内部质检":
+            mapping["qa_result"] = col
+        elif h_str == "原因":
+            mapping["qa_note"] = col
+
+    return mapping
+
+
+@app.route("/check/sheet", methods=["POST"])
+def check_sheet():
+    """
+    电子表格质检
+    Body: {
+        "url": "飞书表格/wiki链接",
+        "row": 2,              # 可选，指定行号（不传则检查所有数据行）
+        "sheet_id": "ff061b"   # 可选，不传则用第一个 sheet
+    }
+    """
+    data = request.get_json(force=True) if request.is_json else {}
+    url = data.get("url", "")
+    target_row = data.get("row")
+    target_sheet_id = data.get("sheet_id")
+
+    if not url:
+        return jsonify({"error": "缺少 url 参数"}), 400
+
+    # 1. 解析 URL
+    sheet_info = feishu.parse_sheet_url(url)
+    if not sheet_info:
+        return jsonify({"error": "无法解析表格链接，请确认是飞书电子表格或 wiki 链接"}), 400
+
+    spreadsheet_token = sheet_info["spreadsheet_token"]
+
+    try:
+        # 2. 获取 sheet 元信息
+        meta = feishu.get_sheet_meta(spreadsheet_token)
+        sheets = meta.get("sheets", [])
+        if not sheets:
+            return jsonify({"error": "表格中没有找到工作表"}), 400
+
+        sheet = sheets[0]
+        if target_sheet_id:
+            sheet = next((s for s in sheets if s["sheetId"] == target_sheet_id), sheets[0])
+
+        sheet_id = sheet["sheetId"]
+        sheet_name = sheet["title"]
+        col_count = sheet.get("columnCount", 26)
+        row_count = sheet.get("rowCount", 100)
+
+        # 3. 读取表头
+        last_col = feishu.col_index_to_letter(min(col_count, 26) - 1)
+        header_range = f"{sheet_id}!A1:{last_col}1"
+        header_rows = feishu.read_sheet_values(spreadsheet_token, header_range)
+        if not header_rows:
+            return jsonify({"error": "无法读取表头"}), 400
+
+        headers = header_rows[0]
+        field_map = detect_sheet_field_map(headers)
+        logger.info(f"Sheet 字段映射: {field_map}")
+
+        # 检查必要字段
+        if "title" not in field_map:
+            return jsonify({"error": "未找到「题目」列，请检查表头"}), 400
+
+        # 确定写入列
+        qa_result_col = field_map.get("qa_result", "R")
+        qa_note_col = field_map.get("qa_note", "S")
+
+        # 4. 读取数据行
+        data_range = f"{sheet_id}!A2:{last_col}{row_count}"
+        all_rows = feishu.read_sheet_values(spreadsheet_token, data_range)
+        logger.info(f"读取到 {len(all_rows)} 行数据")
+
+        if not all_rows:
+            return jsonify({"error": "表格中没有数据"}), 400
+
+        # 5. 转换为 checker 可用的格式
+        def get_cell(row, col_letter):
+            idx = ord(col_letter) - 65
+            if idx < len(row):
+                val = row[idx]
+                return str(val) if val else ""
+            return ""
+
+        def row_to_record(row):
+            return {
+                "题目": get_cell(row, field_map.get("title", "B")),
+                "附件内容": get_cell(row, field_map.get("attachments", "L")),
+                "产物内容": get_cell(row, field_map.get("output", "N")),
+                "打分checklist": get_cell(row, field_map.get("checklist", "P")),
+            }
+
+        # 6. 执行质检
+        results_to_write = []
+
+        if target_row:
+            # 单行质检
+            row_idx = int(target_row) - 2  # 0-based, skip header
+            if row_idx < 0 or row_idx >= len(all_rows):
+                return jsonify({"error": f"行号 {target_row} 超出范围（数据行 2-{len(all_rows)+1}）"}), 400
+
+            record = row_to_record(all_rows[row_idx])
+            result = checker.check_record(target_row, record)
+            pass_status = "✅通过" if result.passed else "❌不通过"
+            notes = [f"{iss.severity} {iss.rule}: {iss.description}\n💡 {iss.suggestion}" for iss in result.issues]
+            note_text = "\n\n".join(notes) if notes else "无问题"
+
+            actual_row = target_row
+            results_to_write.append({
+                "range": f"{sheet_id}!{qa_result_col}{actual_row}:{qa_note_col}{actual_row}",
+                "values": [[pass_status, note_text]],
+            })
+        else:
+            # 全量质检
+            for i, row in enumerate(all_rows):
+                if not any(row):  # 跳过空行
+                    continue
+                record = row_to_record(row)
+                result = checker.check_record(i + 2, record)
+                pass_status = "✅通过" if result.passed else "❌不通过"
+                notes = [f"{iss.severity} {iss.rule}: {iss.description}\n💡 {iss.suggestion}" for iss in result.issues]
+                note_text = "\n\n".join(notes) if notes else "无问题"
+
+                actual_row = i + 2
+                results_to_write.append({
+                    "range": f"{sheet_id}!{qa_result_col}{actual_row}:{qa_note_col}{actual_row}",
+                    "values": [[pass_status, note_text]],
+                })
+
+        # 7. 批量写回
+        for item in results_to_write:
+            feishu.write_sheet_values(spreadsheet_token, item["range"], item["values"])
+            time.sleep(0.1)  # 避免 rate limit
+
+        logger.info(f"写回 {len(results_to_write)} 行质检结果")
+
+        # 8. 生成报告
+        report_lines = [f"📊 电子表格质检报告", f"📋 工作表：{sheet_name}"]
+        report_lines.append(f"- 检查行数：{len(results_to_write)}")
+        report_lines.append(f"- 写入列：{qa_result_col}（内部质检）、{qa_note_col}（原因）")
+
+        return jsonify({
+            "total": len(results_to_write),
+            "sheet_name": sheet_name,
+            "qa_result_col": qa_result_col,
+            "qa_note_col": qa_note_col,
+            "report": "\n".join(report_lines),
+        })
+
+    except Exception as e:
+        logger.error(f"电子表格质检失败: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
