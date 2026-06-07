@@ -201,15 +201,16 @@ def auto_detect_fields(field_names: list) -> dict:
     for name in field_names:
         name_lower = name.lower()
 
-        if "题目" in name_lower or "question" in name_lower or "prompt" in name_lower:
+        # 题目列：以"题目"开头，排除"题目领域"
+        if name.startswith("题目") and "领域" not in name:
             mapping["title"] = name
-        elif "附件" in name_lower or "attachment" in name_lower:
+        elif "附件" in name_lower and "总结" in name:
             mapping["attachments"] = name
-        elif "产物" in name_lower or "output" in name_lower or "输出" in name_lower:
+        elif "产物" in name_lower and "总结" in name:
             mapping["output"] = name
         elif "任务类型" in name_lower or "task" in name_lower:
             mapping["task_type"] = name
-        elif "checklist" in name_lower or "打分" in name_lower or "评分" in name_lower:
+        elif "checklist" in name_lower or ("打分" in name and "checklist" in name):
             mapping["checklist"] = name
 
     return mapping
@@ -242,10 +243,18 @@ def test_check():
         fields = feishu.read_fields(app_token, table_id)
         records = feishu.read_records(app_token, table_id)
 
-        parsed_records = [feishu.get_record_values(r, fields) for r in records]
-
+        # 解析并过滤空行
+        parsed_records = []
+        valid_record_ids = []
         field_names = [f["name"] for f in fields]
         checker.field_mapping = auto_detect_fields(field_names)
+
+        for r in records:
+            parsed = feishu.get_record_values(r, fields)
+            title = checker._get_field(parsed, "title")
+            if title and title.strip():  # 跳过题目为空的行
+                parsed_records.append(parsed)
+                valid_record_ids.append(r.get("record_id", ""))
 
         report = checker.check_all(parsed_records)
         report_text = format_report(report)
@@ -259,7 +268,7 @@ def test_check():
 
             update_records = []
             for i, result in enumerate(report.results):
-                record_id = records[i].get("record_id", "")
+                record_id = valid_record_ids[i] if i < len(valid_record_ids) else ""
                 if not record_id:
                     continue
 

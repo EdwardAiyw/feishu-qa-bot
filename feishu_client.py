@@ -122,10 +122,18 @@ class FeishuClient:
     def get_record_values(self, record: dict, fields: list) -> dict:
         """从记录中提取字段值，返回 {字段名: 值} 的字典"""
         result = {}
-        field_map = {f["field_id"]: f["name"] for f in fields}
+        field_id_to_name = {f["field_id"]: f["name"] for f in fields}
+        field_names_set = {f["name"] for f in fields}
 
-        for field_id, value in record.get("fields", {}).items():
-            field_name = field_map.get(field_id, field_id)
+        for key, value in record.get("fields", {}).items():
+            # 兼容两种情况：
+            # 1. key 是 field_id（正常多维表格）
+            # 2. key 已经是 field_name（从电子表格转换来的多维表格）
+            if key in field_names_set:
+                field_name = key
+            else:
+                field_name = field_id_to_name.get(key, key)
+
             # 处理不同类型的字段值
             if isinstance(value, list):
                 # 多选、人员等字段
